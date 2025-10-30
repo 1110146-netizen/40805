@@ -1,0 +1,1294 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>麥塊遊戲</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Inter', sans-serif; /* 使用 Inter 字體 */
+            background-color: #000;
+            color: #fff;
+            overflow: hidden; /* 隱藏捲軸 */
+        }
+        #blocker {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #instructions {
+            width: 50%;
+            max-width: 400px;
+            padding: 24px;
+            background-color: rgba(20, 20, 20, 0.9);
+            border-radius: 12px;
+            text-align: center;
+            font-size: 16px;
+            cursor: pointer;
+            border: 1px solid #444;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        }
+         #instructions h2 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-top: 0;
+            color: #eee;
+        }
+        #instructions p {
+            font-size: 14px;
+            color: #ccc;
+            line-height: 1.6;
+        }
+        #instructions .key {
+            background-color: #555;
+            color: #fff;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-family: monospace;
+        }
+        
+        /* 十字準星 */
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            border: 2px solid white;
+            background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 50%; /* 圓形 */
+            transform: translate(-50%, -50%);
+            pointer-events: none; /* 讓滑鼠事件穿透 */
+        }
+        
+        /* 熱鍵欄 */
+        #hotbar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            background-color: rgba(0, 0, 0, 0.4);
+            border: 2px solid #555;
+            border-radius: 4px;
+            padding: 4px;
+            pointer-events: none; /* 讓滑鼠事件穿透 */
+        }
+        .slot {
+            width: 44px;
+            height: 44px;
+            border: 2px solid #888;
+            margin: 2px;
+            background-color: rgba(100, 100, 100, 0.5);
+            background-size: cover; /* 讓紋理填滿 */
+            background-position: center;
+            image-rendering: pixelated; /* 像素風 */
+        }
+        .slot.active {
+            border: 2px solid #fff; /* 高亮選中 */
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div id="blocker">
+        <div id="instructions">
+            <h2>點擊開始遊戲</h2>
+            <p>
+                <span class="key">W</span> <span class="key">A</span> <span class="key">S</span> <span class="key">D</span> = 移動<br>
+                <span class="key">空白鍵</span> = 跳躍 / 上游<br>
+                <span class="key">Shift</span> = 衝刺<br>
+                <span class="key">滑鼠左鍵</span> = 破壞方塊<br>
+                <span class="key">滑鼠右鍵</span> = 放置方塊<br>
+                <span class="key">1</span> - <span class="key">9</span> = 切換方塊<br>
+                <span class="key">ESC</span> = 解鎖滑鼠
+            </p>
+        </div>
+    </div>
+    
+    <!-- 十字準星 -->
+    <div id="crosshair" style="width: 2px; height: 10px; border: none; background-color: white; border-radius: 0;"></div>
+    <div id="crosshair" style="width: 10px; height: 2px; border: none; background-color: white; border-radius: 0;"></div>
+
+    <!-- 熱鍵欄 (9格) -->
+    <div id="hotbar">
+        <div class="slot active" id="slot-0"></div>
+        <div class="slot" id="slot-1"></div>
+        <div class="slot" id="slot-2"></div>
+        <div class="slot" id="slot-3"></div>
+        <div class="slot" id="slot-4"></div>
+        <div class="slot" id="slot-5"></div>
+        <div class="slot" id="slot-6"></div>
+        <div class="slot" id="slot-7"></div>
+        <div class="slot" id="slot-8"></div>
+    </div>
+
+    <!-- 導入 Tone.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <!-- Import maps for three.js -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+        import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
+
+        // --- 變數初始化 ---
+        let camera, scene, renderer, controls;
+        let ambientLight, directionalLight; // 提到全域，用於日夜循環
+        let sunMesh, moonMesh; // 用於太陽和月亮
+        let highlighterMesh; // 方塊高亮
+        const clouds = []; // 雲層
+        
+        // --- 物理相關 ---
+        const objects = []; // 儲存所有方塊 (用於銷毀)
+        const solidObjects = []; // 儲存固體方塊 (用於物理碰撞)
+        const waterObjects = []; // 儲存水方塊 (用於游泳檢測)
+        let playerInWater = false; // 玩家是否在水中
+        
+        let raycaster;
+
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let canJump = false;
+        let isSprinting = false; // 衝刺狀態
+
+        let prevTime = performance.now();
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        
+        // --- 材質 (移至全域) ---
+        let dirtMaterial, grassTopMaterial, woodMaterial, grassSideMaterial, stoneMaterial, leavesMaterial, sandMaterial, waterMaterial, glassMaterial, coalMaterial, ironMaterial, goldMaterial, diamondMaterial;
+        // --- 新生態域材質 ---
+        let snowMaterial, snowyGrassSideMaterial, iceMaterial, cactusTopMaterial, cactusSideMaterial;
+        let grassMaterials, snowyGrassMaterials, cactusMaterials;
+
+        let currentMaterial;
+        let materials = [];
+        let hotbarSlots;
+        
+        // --- 地形 ---
+        const noise = new SimplexNoise();
+        const worldSize = 40; // 世界大小 (半徑)
+        const terrainScale = 40; // 地形尺度
+        const terrainHeight = 10; // 地形高度
+        const baseHeight = 5; // 基礎高度
+        const seaLevel = baseHeight + 2; // 海平面高度
+        const biomeScale = 100; // 生態域尺度 (更大)
+        
+        // --- 洞穴 ---
+        const caveScale = 20; // 洞穴噪聲尺度
+        const caveThreshold = 0.5; // 洞穴閥值 (大於此值為空氣)
+
+        // --- 音效 ---
+        let breakSynth, placeSynth, footstepSynth;
+        let lastStepTime = 0;
+        
+        // --- 日夜循環 ---
+        const fogNightColor = new THREE.Color(0x000010);
+        const fogDayColor = new THREE.Color(0x87ceeb);
+        const waterFogColor = new THREE.Color(0x000030); // 水中霧氣
+
+
+        init();
+        animate();
+
+        // --- 紋理函數 (包含新的生態域紋理) ---
+
+        function createDirtTexture(size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#8B5A2B'; // 泥土棕色
+            context.fillRect(0, 0, size, size);
+            for (let i = 0; i < 400; i++) {
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                const s = Math.random() * 2;
+                context.fillStyle = (Math.random() > 0.5) ? '#A0522D' : '#5C4033'; // 深淺噪點
+                context.globalAlpha = Math.random() * 0.5;
+                context.fillRect(x, y, s, s);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+        
+        function createGrassTopTexture(size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#556B2F'; // 暗草綠
+            context.fillRect(0, 0, size, size);
+            for (let i = 0; i < 400; i++) {
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                const s = Math.random() * 2;
+                context.fillStyle = (Math.random() > 0.5) ? '#6B8E23' : '#4a5d28'; // 亮/更暗
+                context.globalAlpha = Math.random() * 0.7;
+                context.fillRect(x, y, s, s);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+        
+        function createStoneTexture(size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#808080'; // 基礎灰色
+            context.fillRect(0, 0, size, size);
+            // 鵝卵石效果
+            for (let i = 0; i < size; i += 8) {
+                for (let j = 0; j < size; j += 8) {
+                    const color = (Math.random() > 0.5) ? '#888888' : '#777777'; // 隨機亮暗
+                    context.fillStyle = color;
+                    context.fillRect(i, j, 8, 8);
+                    // 邊框
+                    context.strokeStyle = '#666666'; // 暗邊框
+                    context.strokeRect(i + 1, j + 1, 6, 6);
+                }
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+
+        function createWoodTexture(size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#deb887'; // 木板淺棕
+            context.fillRect(0, 0, size, size);
+            
+            // 繪製木板 (上下兩塊)
+            context.fillStyle = '#966F33'; // 暗線
+            context.fillRect(0, size / 2 - 1, size, 2); // 中線
+            
+            // 木紋
+            for(let i = 0; i < size; i += 4) {
+                 context.globalAlpha = 0.2;
+                 context.fillStyle = '#966F33';
+                 context.fillRect(i, 0, 1, size / 2 - 1);
+                 context.fillRect(i + 2, size / 2 + 1, 1, size / 2 - 1);
+            }
+            context.globalAlpha = 1.0;
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+        
+        function createLeavesTexture(size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#006400'; // 暗綠
+            context.fillRect(0, 0, size, size);
+            for (let i = 0; i < 200; i++) {
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                const s = Math.random() * 3;
+                context.fillStyle = '#228B22'; // 亮綠
+                context.globalAlpha = Math.random() * 0.8;
+                context.fillRect(x, y, s, s);
+            }
+            // 隨機破洞
+            for (let i = 0; i < 50; i++) {
+                 const x = Math.random() * size;
+                 const y = Math.random() * size;
+                 context.clearRect(x, y, 2, 2);
+            }
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            const material = new THREE.MeshLambertMaterial({ map: texture });
+            material.transparent = true;
+            material.alphaTest = 0.5; // 設置透明度測試，使破洞透明
+            return material;
+        }
+
+        function createGrassSideTexture() {
+            // ... (同前)
+             const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+            // 泥土背景
+            context.fillStyle = '#8B5A2B';
+            context.fillRect(0, 0, 32, 32);
+             // 添加泥土細節
+            for (let i = 0; i < 100; i++) {
+                const x = Math.random() * 32;
+                const y = Math.random() * 32;
+                const s = Math.random() * 2;
+                context.fillStyle = '#A0522D';
+                context.globalAlpha = Math.random() * 0.5;
+                context.fillRect(x, y, s, s);
+            }
+            // 草地頂部
+            context.fillStyle = '#556B2F';
+            context.globalAlpha = 1;
+            context.fillRect(0, 0, 32, 4); // 頂部 4 像素
+             // 添加草地細節
+            for (let i = 0; i < 50; i++) {
+                const x = Math.random() * 32;
+                const y = Math.random() * 4;
+                const s = Math.random() * 1.5;
+                context.fillStyle = '#6B8E23';
+                context.globalAlpha = Math.random() * 0.8;
+                context.fillRect(x, y, s, s);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+        
+        function createSandTexture(size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#F4A460'; // 沙子基礎色
+            context.fillRect(0, 0, size, size);
+            for (let i = 0; i < 400; i++) {
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                const s = Math.random() * 2;
+                context.fillStyle = (Math.random() > 0.5) ? '#D2B48C' : '#E6BF83'; // 噪點
+                context.globalAlpha = Math.random() * 0.5;
+                context.fillRect(x, y, s, s);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+
+        function createWaterTexture(size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#1E90FF'; // 水的藍色
+            context.fillRect(0, 0, size, size);
+            for (let i = 0; i < 100; i++) { // 波紋
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                const s = Math.random() * 10;
+                context.fillStyle = '#4169E1';
+                context.globalAlpha = Math.random() * 0.2;
+                context.fillRect(x, y, s, 1);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            const material = new THREE.MeshLambertMaterial({ map: texture });
+            material.transparent = true;
+            material.opacity = 0.7; // 半透明
+            return material;
+        }
+        
+        function createGlassTexture(size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#FFFFFF'; // 白色基礎
+            context.fillRect(0, 0, size, size);
+            context.fillStyle = '#E0FFFF'; // 淺藍色亮點
+            context.globalAlpha = 0.3;
+            context.fillRect(size * 0.2, size * 0.2, size * 0.3, size * 0.3);
+            context.fillRect(size * 0.6, size * 0.6, size * 0.2, size * 0.2);
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            const material = new THREE.MeshLambertMaterial({ map: texture });
+            material.transparent = true;
+            material.opacity = 0.4; // 高度透明
+            material.alphaTest = 0.1; // 改善透明渲染
+            return material;
+        }
+        
+        function createOreTexture(baseColor, oreColor, size = 32) {
+            // ... (同前)
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            // 基礎石頭紋理
+            context.fillStyle = baseColor; // 基礎灰色
+            context.fillRect(0, 0, size, size);
+            for (let i = 0; i < size; i += 8) {
+                for (let j = 0; j < size; j += 8) {
+                    const color = (Math.random() > 0.5) ? '#888888' : '#777777';
+                    context.fillStyle = color;
+                    context.fillRect(i, j, 8, 8);
+                    context.strokeStyle = '#666666';
+                    context.strokeRect(i + 1, j + 1, 6, 6);
+                }
+            }
+            // 礦物斑點
+            for (let i = 0; i < 50; i++) {
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                const s = Math.random() * 4 + 2; // 斑點稍大
+                context.fillStyle = oreColor;
+                context.globalAlpha = Math.random() * 0.8 + 0.2;
+                context.fillRect(x, y, s, s);
+            }
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+        
+        // --- 新生態域紋理 ---
+        
+        function createSnowTexture(size = 32) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#FFFFFF'; // 雪
+            context.fillRect(0, 0, size, size);
+            for (let i = 0; i < 200; i++) {
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                const s = Math.random() * 2;
+                context.fillStyle = '#F0F8FF'; // 淺灰藍噪點
+                context.globalAlpha = Math.random() * 0.3;
+                context.fillRect(x, y, s, s);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+
+        function createIceTexture(size = 32) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#B0E0E6'; // 冰的淺藍
+            context.fillRect(0, 0, size, size);
+            for (let i = 0; i < 100; i++) { // 裂紋
+                const x = Math.random() * size;
+                const y = Math.random() * size;
+                context.fillStyle = '#FFFFFF';
+                context.globalAlpha = Math.random() * 0.4;
+                context.fillRect(x, y, Math.random() * 5, 1);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            const material = new THREE.MeshLambertMaterial({ map: texture });
+            material.transparent = true;
+            material.opacity = 0.8; // 半透明
+            return material;
+        }
+
+        function createSnowyGrassSideTexture() {
+             const canvas = document.createElement('canvas');
+            canvas.width = 32;
+            canvas.height = 32;
+            const context = canvas.getContext('2d');
+            // 泥土背景
+            context.fillStyle = '#8B5A2B';
+            context.fillRect(0, 0, 32, 32);
+             // 泥土細節
+            for (let i = 0; i < 100; i++) {
+                const x = Math.random() * 32;
+                const y = Math.random() * 32;
+                const s = Math.random() * 2;
+                context.fillStyle = '#A0522D';
+                context.globalAlpha = Math.random() * 0.5;
+                context.fillRect(x, y, s, s);
+            }
+            // 雪頂部
+            context.fillStyle = '#FFFFFF';
+            context.globalAlpha = 1;
+            context.fillRect(0, 0, 32, 4); // 頂部 4 像素
+             // 雪細節
+            for (let i = 0; i < 50; i++) {
+                const x = Math.random() * 32;
+                const y = Math.random() * 4;
+                const s = Math.random() * 1.5;
+                context.fillStyle = '#F0F8FF';
+                context.globalAlpha = Math.random() * 0.8;
+                context.fillRect(x, y, s, s);
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+        
+        function createCactusTopTexture(size = 32) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#006400'; // 仙人掌暗綠
+            context.fillRect(0, 0, size, size);
+            // 頂部紋理
+            for(let i = 0; i < 10; i++) {
+                context.strokeStyle = '#008000'; // 亮綠
+                context.globalAlpha = 0.5;
+                context.beginPath();
+                context.arc(size/2, size/2, Math.random() * (size / 2), 0, Math.PI * 2);
+                context.stroke();
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+
+        function createCactusSideTexture(size = 32) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            context.fillStyle = '#006400'; // 暗綠
+            context.fillRect(0, 0, size, size);
+            // 垂直線條
+            for (let i = 4; i < size; i += 6) {
+                context.fillStyle = '#008000'; // 亮綠
+                context.globalAlpha = 0.8;
+                context.fillRect(i, 0, 2, size);
+                // 刺
+                for (let j = 0; j < size; j += 8) {
+                    context.fillStyle = '#2F4F2F'; // 暗刺
+                    context.globalAlpha = 1;
+                    context.fillRect(i - 1, j + Math.random() * 4, 1, 1);
+                    context.fillRect(i + 2, j + Math.random() * 4, 1, 1);
+                }
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return new THREE.MeshLambertMaterial({ map: texture });
+        }
+
+        // ---
+        
+        function updateHotbar(selectedIndex) {
+            // ... (同前)
+            hotbarSlots.forEach((slot, index) => {
+                if (index === selectedIndex) {
+                    slot.classList.add('active');
+                } else {
+                    slot.classList.remove('active');
+                }
+            });
+        }
+        
+        // 函數：生成樹木
+        function createTree(x, y, z) {
+            // ... (同前)
+            const trunkHeight = Math.floor(Math.random() * 3) + 4; // 樹幹高度 4-6
+            const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+            
+            // 生成樹幹
+            for (let i = 0; i < trunkHeight; i++) {
+                const trunkBlock = new THREE.Mesh(boxGeometry, woodMaterial);
+                trunkBlock.position.set(x, y + i, z);
+                trunkBlock.castShadow = true;
+                trunkBlock.receiveShadow = true;
+                scene.add(trunkBlock);
+                objects.push(trunkBlock);
+                solidObjects.push(trunkBlock); // 樹幹是固體
+            }
+            
+            // 生成樹葉
+            const leafYStart = y + trunkHeight - 2;
+            for (let ly = leafYStart; ly < leafYStart + 3; ly++) {
+                for (let lx = -2; lx <= 2; lx++) {
+                    for (let lz = -2; lz <= 2; lz++) {
+                        // 葉子呈十字形 + 頂部
+                        if (ly === leafYStart + 2) { // 頂層
+                            if (Math.abs(lx) <= 1 && Math.abs(lz) <= 1) {
+                                if (Math.random() > 0.1) { // 隨機掉落
+                                    const leafBlock = new THREE.Mesh(boxGeometry, leavesMaterial);
+                                    leafBlock.position.set(x + lx, ly, z + lz);
+                                    leafBlock.castShadow = true;
+                                    scene.add(leafBlock);
+                                    objects.push(leafBlock);
+                                    solidObjects.push(leafBlock); // 樹葉是固體
+                                }
+                            }
+                        } else { // 中下層
+                             if (Math.abs(lx) + Math.abs(lz) <= 2) {
+                                if (Math.random() > 0.05) { // 隨機掉落
+                                    const leafBlock = new THREE.Mesh(boxGeometry, leavesMaterial);
+                                    leafBlock.position.set(x + lx, ly, z + lz);
+                                    leafBlock.castShadow = true;
+                                    scene.add(leafBlock);
+                                    objects.push(leafBlock);
+                                    solidObjects.push(leafBlock); // 樹葉是固體
+                                }
+                             }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // --- 新函數：生成仙人掌 ---
+        function createCactus(x, y, z) {
+            const height = Math.floor(Math.random() * 2) + 2; // 高度 2-3
+            const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+            
+            for (let i = 0; i < height; i++) {
+                const cactusBlock = new THREE.Mesh(boxGeometry, cactusMaterials);
+                cactusBlock.position.set(x, y + i, z);
+                cactusBlock.castShadow = true;
+                cactusBlock.receiveShadow = true;
+                scene.add(cactusBlock);
+                objects.push(cactusBlock);
+                solidObjects.push(cactusBlock); // 仙人掌是固體
+            }
+        }
+
+
+        function init() {
+            // --- 音效初始化 ---
+            const startAudio = async () => {
+                // ... (同前)
+                await Tone.start();
+                console.log("音訊已準備");
+                
+                breakSynth = new Tone.NoiseSynth({
+                    noise: { type: 'brown' },
+                    envelope: { attack: 0.005, decay: 0.1, sustain: 0 }
+                }).toDestination();
+                
+                placeSynth = new Tone.MembraneSynth({
+                    pitchDecay: 0.01,
+                    octaves: 2,
+                    volume: -5
+                }).toDestination();
+                
+                footstepSynth = new Tone.MembraneSynth({
+                    pitchDecay: 0.02,
+                    octaves: 1,
+                    volume: -10
+                }).toDestination();
+            };
+
+            // --- 紋理生成 ---
+            dirtMaterial = createDirtTexture();
+            grassTopMaterial = createGrassTopTexture();
+            woodMaterial = createWoodTexture();
+            grassSideMaterial = createGrassSideTexture();
+            stoneMaterial = createStoneTexture();
+            leavesMaterial = createLeavesTexture();
+            sandMaterial = createSandTexture();
+            waterMaterial = createWaterTexture();
+            glassMaterial = createGlassTexture();
+            coalMaterial = createOreTexture('#808080', '#202020');
+            ironMaterial = createOreTexture('#808080', '#D2691E');
+            goldMaterial = createOreTexture('#808080', '#FFD700');
+            diamondMaterial = createOreTexture('#808080', '#00BFFF');
+            
+            // --- 生態域紋理 ---
+            snowMaterial = createSnowTexture();
+            snowyGrassSideMaterial = createSnowyGrassSideTexture();
+            iceMaterial = createIceTexture();
+            cactusTopMaterial = createCactusTopTexture();
+            cactusSideMaterial = createCactusSideTexture();
+            
+            // --- 材質陣列 (用於方塊) ---
+            grassMaterials = [
+                grassSideMaterial, // right
+                grassSideMaterial, // left
+                grassTopMaterial,  // top
+                dirtMaterial,      // bottom
+                grassSideMaterial, // front
+                grassSideMaterial  // back
+            ];
+            
+            snowyGrassMaterials = [
+                snowyGrassSideMaterial, // right
+                snowyGrassSideMaterial, // left
+                grassTopMaterial,      // top (草頂，雪會蓋在上面)
+                dirtMaterial,          // bottom
+                snowyGrassSideMaterial, // front
+                snowyGrassSideMaterial  // back
+            ];
+            
+            cactusMaterials = [
+                cactusSideMaterial, // right
+                cactusSideMaterial, // left
+                cactusTopMaterial,  // top
+                cactusTopMaterial,  // bottom
+                cactusSideMaterial, // front
+                cactusSideMaterial  // back
+            ];
+            
+            // --- 材質陣列 (9種) - 熱鍵欄更新 ---
+            materials = [grassMaterials, dirtMaterial, woodMaterial, stoneMaterial, sandMaterial, snowMaterial, iceMaterial, cactusMaterials, glassMaterial];
+            currentMaterial = materials[0]; // 預設為草地
+            hotbarSlots = document.querySelectorAll('.slot');
+
+            // --- 設定熱鍵欄圖示 (9格) - 熱鍵欄更新 ---
+            document.getElementById('slot-0').style.backgroundImage = `url(${grassTopMaterial.map.image.toDataURL()})`;
+            document.getElementById('slot-1').style.backgroundImage = `url(${dirtMaterial.map.image.toDataURL()})`;
+            document.getElementById('slot-2').style.backgroundImage = `url(${woodMaterial.map.image.toDataURL()})`;
+            document.getElementById('slot-3').style.backgroundImage = `url(${stoneMaterial.map.image.toDataURL()})`;
+            document.getElementById('slot-4').style.backgroundImage = `url(${sandMaterial.map.image.toDataURL()})`;
+            document.getElementById('slot-5').style.backgroundImage = `url(${snowMaterial.map.image.toDataURL()})`;
+            document.getElementById('slot-6').style.backgroundImage = `url(${iceMaterial.map.image.toDataURL()})`;
+            document.getElementById('slot-7').style.backgroundImage = `url(${cactusTopMaterial.map.image.toDataURL()})`; // 顯示仙人掌頂部
+            document.getElementById('slot-8').style.backgroundImage = `url(${glassMaterial.map.image.toDataURL()})`;
+
+
+            // --- 場景設定 ---
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb); // 預設白天天空
+            scene.fog = new THREE.Fog(0x87ceeb, 0, 100);
+
+            // --- 相機設定 ---
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // 智慧出生點
+            let startY = baseHeight + Math.floor(noise.noise(0 / terrainScale, 0 / terrainScale) * terrainHeight);
+            if (startY < seaLevel) startY = seaLevel; // 如果出生點在水下，則出生在海平面
+            camera.position.set(0, startY + 1.5, 0); // 玩家起始高度
+
+            // --- Sun & Moon ---
+            // ... (同前)
+            const sunGeometry = new THREE.SphereGeometry(8, 16, 16);
+            const sunMat = new THREE.MeshBasicMaterial({ color: 0xffff00, fog: false });
+            sunMesh = new THREE.Mesh(sunGeometry, sunMat);
+            scene.add(sunMesh);
+
+            const moonGeometry = new THREE.SphereGeometry(6, 16, 16);
+            const moonMat = new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false });
+            moonMesh = new THREE.Mesh(moonGeometry, moonMat);
+            scene.add(moonMesh);
+
+            // --- 雲層 ---
+            // ... (同前)
+            const cloudGeo = new THREE.PlaneGeometry(15, 15);
+            const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, fog: false });
+            for (let i = 0; i < 50; i++) {
+                const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+                cloud.position.set(
+                    (Math.random() - 0.5) * worldSize * 2,
+                    terrainHeight + baseHeight + 15 + Math.random() * 5, // 高空
+                    (Math.random() - 0.5) * worldSize * 2
+                );
+                cloud.rotation.x = -Math.PI / 2; // 躺平
+                scene.add(cloud);
+                clouds.push(cloud);
+            }
+            
+            // --- 方塊高亮 ---
+            // ... (同前)
+            const highLightGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.01, 1.01, 1.01)); // 略大於方塊
+            const highLightMat = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2 }); // 黑色線框
+            highlighterMesh = new THREE.LineSegments(highLightGeo, highLightMat);
+            highlighterMesh.visible = false; // 預設隱藏
+            scene.add(highlighterMesh);
+
+
+            // --- 控制器設定 ---
+            controls = new PointerLockControls(camera, document.body);
+
+            // ... (同前: blocker, instructions, lock/unlock)
+            const blocker = document.getElementById('blocker');
+            const instructions = document.getElementById('instructions');
+
+            instructions.addEventListener('click', function () {
+                controls.lock();
+                startAudio(); // 點擊開始時啟動音訊
+            });
+
+            controls.addEventListener('lock', function () {
+                instructions.style.display = 'none';
+                blocker.style.display = 'none';
+            });
+
+            controls.addEventListener('unlock', function () {
+                blocker.style.display = 'block';
+                instructions.style.display = '';
+            });
+
+            scene.add(controls.getObject());
+
+            // --- 鍵盤事件監聽 ---
+            const onKeyDown = function (event) {
+                switch (event.code) {
+                    case 'ArrowUp': case 'KeyW': moveForward = true; break;
+                    case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+                    case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+                    case 'ArrowRight': case 'KeyD': moveRight = true; break;
+                    // --- 跳躍/游泳 ---
+                    case 'Space': if (canJump) { velocity.y += (playerInWater ? 200 : 350); canJump = false; } break;
+                    case 'ShiftLeft': case 'ShiftRight': isSprinting = true; break;
+                    
+                    // --- 熱鍵欄切換 (1-9) - 已更新 ---
+                    case 'Digit1': currentMaterial = materials[0]; updateHotbar(0); break;
+                    case 'Digit2': currentMaterial = materials[1]; updateHotbar(1); break;
+                    case 'Digit3': currentMaterial = materials[2]; updateHotbar(2); break;
+                    case 'Digit4': currentMaterial = materials[3]; updateHotbar(3); break;
+                    case 'Digit5': currentMaterial = materials[4]; updateHotbar(4); break;
+                    case 'Digit6': currentMaterial = materials[5]; updateHotbar(5); break;
+                    case 'Digit7': currentMaterial = materials[6]; updateHotbar(6); break;
+                    case 'Digit8': currentMaterial = materials[7]; updateHotbar(7); break;
+                    case 'Digit9': currentMaterial = materials[8]; updateHotbar(8); break;
+                }
+            };
+
+            const onKeyUp = function (event) {
+                // ... (同前)
+                switch (event.code) {
+                    case 'ArrowUp': case 'KeyW': moveForward = false; break;
+                    case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+                    case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+                    case 'ArrowRight': case 'KeyD': moveRight = false; break;
+                    case 'ShiftLeft': case 'ShiftRight': isSprinting = false; break;
+                }
+            };
+
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            document.addEventListener('mousedown', onMouseDown);
+
+            // --- 光線投射器，用於偵測方塊 ---
+            raycaster = new THREE.Raycaster(new THREE.Vector3(), new THREE.Vector3(0, -1, 0), 0, 10);
+
+            // --- 世界生成 (地形 + 洞穴 + 生態域) ---
+            const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+            
+            // 生成地形
+            for (let x = -worldSize; x <= worldSize; x++) {
+                for (let z = -worldSize; z <= worldSize; z++) {
+                    // 1. 計算生態域
+                    const biomeNoise = noise.noise(x / biomeScale, z / biomeScale);
+                    
+                    // 2. 計算地形高度
+                    const y_terrain = baseHeight + Math.floor(noise.noise(x / terrainScale, z / terrainScale) * terrainHeight);
+                    
+                    // 3. 檢查洞穴
+                    const isCave = (y) => noise.noise(x / caveScale, y / caveScale, z / caveScale) > caveThreshold;
+
+                    // 4. 生成
+                    if (y_terrain < seaLevel) { // 水下
+                        // 水下地面
+                        for (let y = 0; y <= y_terrain; y++) {
+                             if (isCave(y)) continue;
+                             const block = new THREE.Mesh(boxGeometry, sandMaterial); // 水下總是沙
+                             block.position.set(x, y + 0.5, z);
+                             scene.add(block);
+                             objects.push(block);
+                             solidObjects.push(block);
+                        }
+                        // 水 或 冰
+                        const waterMat = (biomeNoise > 0.3) ? iceMaterial : waterMaterial; // 雪地結冰
+                        const isWaterSolid = (biomeNoise > 0.3); // 冰是固體
+                        
+                        for (let y = y_terrain + 1; y <= seaLevel; y++) {
+                            const waterBlock = new THREE.Mesh(boxGeometry, waterMat);
+                            waterBlock.position.set(x, y + 0.5, z);
+                            scene.add(waterBlock);
+                            objects.push(waterBlock);
+                            if (isWaterSolid) {
+                                solidObjects.push(waterBlock); // 冰是固體
+                            } else {
+                                waterObjects.push(waterBlock); // 水不是固體
+                            }
+                        }
+                        
+                    } else { // 陸地
+                        let topMaterial = grassMaterials;
+                        let midMaterial = dirtMaterial;
+                        let spawnPlant = (px, py, pz) => { // 預設生成樹
+                            if (Math.random() < 0.01) createTree(px, py, pz);
+                        };
+
+                        if (biomeNoise < -0.3) { // --- 沙漠 ---
+                            topMaterial = sandMaterial;
+                            midMaterial = sandMaterial;
+                            spawnPlant = (px, py, pz) => { // 生成仙人掌
+                                if (Math.random() < 0.01) createCactus(px, py, pz);
+                            };
+                        } else if (biomeNoise > 0.3) { // --- 雪地 ---
+                            // 雪地不替換 topMaterial，而是額外在上面加一層雪
+                            topMaterial = snowyGrassMaterials;
+                            midMaterial = dirtMaterial;
+                            // 樹木照常生成
+                        }
+                        
+                        // 生成頂層 (草/沙/雪)
+                        if (!isCave(y_terrain)) {
+                            const topBlock = new THREE.Mesh(boxGeometry, topMaterial);
+                            topBlock.position.set(x, y_terrain + 0.5, z);
+                            scene.add(topBlock);
+                            objects.push(topBlock);
+                            solidObjects.push(topBlock);
+                            
+                            if (biomeNoise > 0.3) { // 如果是雪地，在草/土上多加一層雪
+                                if (!isCave(y_terrain + 1)) {
+                                    const snowBlock = new THREE.Mesh(boxGeometry, snowMaterial);
+                                    snowBlock.position.set(x, y_terrain + 1.5, z);
+                                    scene.add(snowBlock);
+                                    objects.push(snowBlock);
+                                    solidObjects.push(snowBlock);
+                                    // 植物長在雪上
+                                    spawnPlant(x, y_terrain + 2.5, z);
+                                }
+                            } else {
+                                // 植物長在草/沙上
+                                spawnPlant(x, y_terrain + 1.5, z);
+                            }
+                        }
+                        
+                        // 生成中層 (泥土/沙)
+                        for (let d = 1; d <= 2; d++) {
+                            if (isCave(y_terrain - d)) continue;
+                            const midBlock = new THREE.Mesh(boxGeometry, midMaterial);
+                            midBlock.position.set(x, y_terrain - d + 0.5, z);
+                            scene.add(midBlock);
+                            objects.push(midBlock);
+                            solidObjects.push(midBlock);
+                        }
+                        
+                        // 生成底層 (石頭 + 礦物)
+                        for (let by = y_terrain - 3; by >= 0; by--) {
+                            if (isCave(by)) continue;
+                            
+                            // 決定材質
+                            let blockMaterial = stoneMaterial;
+                            if (Math.random() < 0.05) blockMaterial = coalMaterial;
+                            else if (Math.random() < 0.03) blockMaterial = ironMaterial;
+                            else if (by < 10 && Math.random() < 0.02) blockMaterial = goldMaterial;
+                            else if (by < 5 && Math.random() < 0.01) blockMaterial = diamondMaterial;
+                            
+                            const stoneBlock = new THREE.Mesh(boxGeometry, blockMaterial);
+                            stoneBlock.position.set(x, by + 0.5, z);
+                            scene.add(stoneBlock);
+                            objects.push(stoneBlock);
+                            solidObjects.push(stoneBlock);
+                        }
+                    }
+                }
+            }
+            
+            
+            // --- 光源 ---
+            // ... (同前)
+            ambientLight = new THREE.AmbientLight(0xcccccc, 0.8);
+            scene.add(ambientLight);
+            
+            directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(50, 50, 50);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            scene.add(directionalLight);
+
+            // --- 渲染器設定 ---
+            // ... (同前)
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // --- 視窗大小變更事件 ---
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            // ... (同前)
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onMouseDown(event) {
+            // ... (同前)
+            if (!controls.isLocked) return;
+
+            const mouse = new THREE.Vector2(0, 0); // 中心點
+            raycaster.setFromCamera(mouse, camera);
+
+            // 檢查所有方塊 (包括水)
+            const intersects = raycaster.intersectObjects(objects, false);
+
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                
+                // 左鍵：破壞方塊
+                if (event.button === 0) {
+                    scene.remove(intersect.object);
+                    objects.splice(objects.indexOf(intersect.object), 1);
+                    
+                    // 同時從物理列表中移除
+                    const solidIndex = solidObjects.indexOf(intersect.object);
+                    if (solidIndex > -1) {
+                        solidObjects.splice(solidIndex, 1);
+                    }
+                    const waterIndex = waterObjects.indexOf(intersect.object);
+                    if (waterIndex > -1) {
+                        waterObjects.splice(waterIndex, 1);
+                    }
+                    
+                    if (breakSynth) breakSynth.triggerAttackRelease("4n"); // 播放破壞音效
+                }
+                
+                // 右鍵：放置方塊 (使用 currentMaterial)
+                if (event.button === 2) {
+                    const newBox = new THREE.Mesh( new THREE.BoxGeometry(1, 1, 1), currentMaterial );
+                    newBox.castShadow = true;
+                    newBox.receiveShadow = true;
+                    
+                    const placementNormal = intersect.face.normal.clone();
+                    placementNormal.transformDirection(intersect.object.matrixWorld).normalize();
+
+                    newBox.position.copy(intersect.point).add(placementNormal.multiplyScalar(0.5));
+                    
+                    // 對齊網格
+                    newBox.position.set(
+                        Math.round(newBox.position.x),
+                        Math.round(newBox.position.y - 0.5) + 0.5,
+                        Math.round(newBox.position.z)
+                    );
+                    
+                    // 檢查是否與玩家重疊
+                    const playerPos = controls.getObject().position;
+                    const playerBox = new THREE.Box3().setFromCenterAndSize(
+                        new THREE.Vector3(playerPos.x, playerPos.y - 0.5, playerPos.z), // 玩家身體中心
+                        new THREE.Vector3(0.8, 1.8, 0.8) // 玩家碰撞箱
+                    );
+                    const newBlockBox = new THREE.Box3().setFromObject(newBox);
+                    
+                    if (!playerBox.intersectsBox(newBlockBox)) { // 僅在不重疊時放置
+                        scene.add(newBox);
+                        objects.push(newBox);
+                        
+                        // 判斷是否為固體 (水和玻璃不是)
+                        if (currentMaterial !== waterMaterial && currentMaterial !== glassMaterial) {
+                             solidObjects.push(newBox);
+                        } else if (currentMaterial === waterMaterial) {
+                             waterObjects.push(newBox);
+                        }
+                        
+                        if (placeSynth) placeSynth.triggerAttackRelease("C2", "8n"); // 播放放置音效
+                    }
+                }
+            }
+        }
+        
+        // --- 檢查玩家是否在水中 (簡易版) ---
+        function checkPlayerInWater() {
+            // ... (同前)
+            const playerPos = controls.getObject().position;
+            const playerHeadY = playerPos.y; // 攝影機 (頭) 的高度
+            
+            for (let i = 0; i < waterObjects.length; i++) {
+                if (waterObjects[i].position.distanceToSquared(playerPos) < 2) { // 快速距離檢查
+                    const waterPos = waterObjects[i].position;
+                    // 檢查玩家的頭是否在水方塊的邊界內
+                    if (playerPos.x >= waterPos.x - 0.5 && playerPos.x <= waterPos.x + 0.5 &&
+                        playerPos.z >= waterPos.z - 0.5 && playerPos.z <= waterPos.z + 0.5 &&
+                        playerHeadY >= waterPos.y - 0.5 && playerHeadY <= waterPos.y + 0.5) 
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+
+            // --- 游泳檢查 ---
+            playerInWater = checkPlayerInWater();
+
+            // --- 日夜循環邏輯 ---
+            // ... (同前)
+            const cycleSpeed = 0.05; // 循環速度
+            const angle = (time / 1000) * cycleSpeed; // 轉為秒
+            
+            directionalLight.position.set(
+                Math.sin(angle) * 50, 
+                Math.cos(angle) * 50, 
+                30
+            );
+            
+            // --- 移動太陽和月亮 ---
+            sunMesh.position.copy(directionalLight.position);
+            moonMesh.position.set(
+                Math.sin(angle + Math.PI) * 50, 
+                Math.cos(angle + Math.PI) * 50, 
+                30
+            );
+            
+            const intensity = (Math.cos(angle) + 1) / 2; 
+            directionalLight.intensity = Math.max(0.1, intensity) * 0.8;
+            ambientLight.intensity = Math.max(0.1, intensity) * 0.8;
+            
+            // --- 霧氣和背景 ---
+            // ... (同前)
+            if (playerInWater) {
+                scene.fog.color.copy(waterFogColor);
+                scene.background.copy(waterFogColor);
+            } else {
+                const bgIntensity = Math.max(0, intensity * 1.5 - 0.5); // 讓夜晚更黑
+                scene.fog.color.lerpColors(fogNightColor, fogDayColor, bgIntensity);
+                scene.background.lerpColors(fogNightColor, fogDayColor, bgIntensity);
+            }
+            
+
+            if (controls.isLocked === true) {
+                // --- 物理模擬 ---
+                // ... (同前: 方塊高亮邏輯)
+                raycaster.ray.origin.copy(controls.getObject().position);
+                raycaster.ray.origin.y -= 1.5;
+
+                const mouse = new THREE.Vector2(0, 0); 
+                raycaster.setFromCamera(mouse, camera);
+                const intersectsHighlight = raycaster.intersectObjects(objects, false); 
+
+                if (intersectsHighlight.length > 0) {
+                    const intersect = intersectsHighlight[0];
+                    const highLightPos = intersect.object.position;
+                    highlighterMesh.position.copy(highLightPos);
+                    highlighterMesh.visible = true;
+                } else {
+                    highlighterMesh.visible = false;
+                }
+                
+                // --- 碰撞檢測 (只檢查固體) ---
+                raycaster.ray.origin.copy(controls.getObject().position);
+                raycaster.ray.origin.y -= 1.5;
+
+                const intersections = raycaster.intersectObjects(solidObjects, false);
+                const onObject = intersections.length > 0 && intersections[0].distance < 0.1; 
+                
+                // --- 物理 (水中 vs 陸地) ---
+                // ... (同前)
+                if (playerInWater) {
+                    velocity.y -= 9.8 * 60.0 * delta; // 較弱的重力 (浮力)
+                    velocity.x -= velocity.x * 20.0 * delta; // 水中阻力
+                    velocity.z -= velocity.z * 20.0 * delta;
+                } else {
+                    velocity.y -= 9.8 * 100.0 * delta; // 正常重力
+                    velocity.x -= velocity.x * 10.0 * delta; // 正常阻力
+                    velocity.z -= velocity.z * 10.0 * delta;
+                }
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                // --- 速度 (衝刺 vs 走路 vs 游泳) ---
+                // ... (同前)
+                const isMoving = moveForward || moveBackward || moveLeft || moveRight;
+                const currentSpeed = isSprinting && isMoving && !playerInWater ? 800.0 : (playerInWater ? 200.0 : 400.0);
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * currentSpeed * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * currentSpeed * delta;
+                
+                // 播放腳步聲 (僅限陸地)
+                // ... (同前)
+                const stepSpeed = isSprinting ? 250 : 400; // ms
+                if (isMoving && onObject && !playerInWater && (time - lastStepTime > stepSpeed)) { 
+                     if (footstepSynth) footstepSynth.triggerAttackRelease("C1", "16n");
+                     lastStepTime = time;
+                }
+
+                // --- 跳躍/游泳邏輯 ---
+                // ... (同前)
+                if (onObject === true) { // 站在固體上
+                    velocity.y = Math.max(0, velocity.y);
+                    canJump = true;
+                } else if (playerInWater) { // 在水中
+                    velocity.y = Math.max(-30.0, velocity.y); // 水中緩慢下沉
+                    canJump = true; // 可以「游泳向上」
+                } else { // 在空中
+                    canJump = false;
+                }
+                
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+                controls.getObject().position.y += (velocity.y * delta);
+
+                // 掉出世界外的保護
+                // ... (同前)
+                if (controls.getObject().position.y < -10) { 
+                    velocity.y = 0;
+                    
+                    // 重生回海平面
+                    let respawnY = baseHeight + Math.floor(noise.noise(0 / terrainScale, 0 / terrainScale) * terrainHeight);
+                    if (respawnY < seaLevel) respawnY = seaLevel;
+                    controls.getObject().position.set(0, respawnY + 1.5, 0);
+
+                    canJump = true;
+                }
+            }
+            
+            // --- 移動雲層 ---
+            // ... (同前)
+            const cloudSpeed = 5.0 * delta; // 雲的移動速度
+            clouds.forEach(cloud => {
+                cloud.position.x += cloudSpeed;
+                if (cloud.position.x > worldSize) {
+                    cloud.position.x = -worldSize; // 從另一邊繞回來
+                }
+            });
+            
+            prevTime = time;
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
+
